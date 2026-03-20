@@ -172,7 +172,7 @@ func daemonize(logger *log.Logger) error {
 	msg := string(buf[:n])
 	if msg != "ok" {
 		// Child failed to mount. Reap it so we don't leave a zombie.
-		child.Wait()
+		_ = child.Wait()
 		logFile.Close()
 		if msg == "" {
 			return fmt.Errorf("background process exited before mounting (log: %s)", logFile.Name())
@@ -182,7 +182,7 @@ func daemonize(logger *log.Logger) error {
 
 	logger.Printf("mounted on %s (pid %d)", os.Args[len(os.Args)-1], child.Process.Pid)
 
-	child.Process.Release()
+	_ = child.Process.Release()
 	logFile.Close()
 	return nil
 }
@@ -246,7 +246,7 @@ func reportMountStatus(mountErr error) {
 		return
 	}
 	fd := 3
-	fmt.Sscanf(fdStr, "%d", &fd)
+	_, _ = fmt.Sscanf(fdStr, "%d", &fd)
 	w := os.NewFile(uintptr(fd), "status-pipe")
 	if w == nil {
 		return
