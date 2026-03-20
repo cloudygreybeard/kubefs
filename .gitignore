@@ -1,0 +1,25 @@
+# Binary (name will match project)
+/kubefs
+*.exe
+
+# Build artifacts
+dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Go workspace
+go.work
+go.work.sum

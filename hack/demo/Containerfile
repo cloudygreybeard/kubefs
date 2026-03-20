@@ -1,0 +1,68 @@
+# kubefs-demo: thin demo container for recording kubefs terminal sessions.
+#
+# Connects to an external Kubernetes API (mock or real) rather than
+# embedding one. The default kubeconfig points to http://mock-kubeapi:6443
+# which works when run on the same container network as the mock-kubeapi
+# container. Override KUBECONFIG or mount a real kubeconfig to retarget.
+#
+# Build:
+#   podman build -t kubefs-demo -f hack/demo/Containerfile .
+#
+# Run with mock API (via record-demo.sh):
+#   ./hack/record-demo.sh
+#
+# Run against a real cluster:
+#   podman run --rm -it --privileged \
+#     -v ~/.kube/config:/home/demo/.kube/config:ro \
+#     kubefs-demo
+
+FROM golang:1.23-bookworm AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w \
+    -X github.com/cloudygreybeard/kubefs/cmd.Version=demo \
+    -X github.com/cloudygreybeard/kubefs/cmd.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo demo) \
+    -X github.com/cloudygreybeard/kubefs/cmd.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -o /kubefs .
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fuse3 bash ca-certificates openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /kubefs /usr/local/bin/kubefs
+
+RUN useradd -m -s /bin/bash demo \
+    && mkdir -p /mnt/k8s \
+    && chown demo:demo /mnt/k8s
+
+ENV HOME=/home/demo
+ENV TERM=xterm-256color
+ENV KUBE_API_SERVER=http://mock-kubeapi:6443
+
+RUN mkdir -p /home/demo/.kube && \
+    printf 'apiVersion: v1\n\
+kind: Config\n\
+clusters:\n\
+- cluster:\n\
+    server: http://mock-kubeapi:6443\n\
+  name: demo\n\
+contexts:\n\
+- context:\n\
+    cluster: demo\n\
+    user: demo\n\
+  name: demo\n\
+current-context: demo\n\
+users:\n\
+- name: demo\n\
+  user: {}\n' > /home/demo/.kube/config && \
+    chown -R demo:demo /home/demo
+
+COPY --chown=demo:demo hack/demo/demo-script.sh /home/demo/demo-script.sh
+RUN chmod +x /home/demo/demo-script.sh
+
+CMD ["/home/demo/demo-script.sh"]

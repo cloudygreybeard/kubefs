@@ -1,0 +1,21 @@
+# mock-kubeapi: lightweight mock Kubernetes API server
+#
+# Serves canned JSON responses for namespace, pod, configmap, secret,
+# and service resources. Useful for demos, development, and testing.
+#
+# Build:
+#   podman build -t mock-kubeapi -f hack/demo/mock-kubeapi/Containerfile hack/demo/mock-kubeapi/
+#
+# Run:
+#   podman run -p 6443:6443 mock-kubeapi
+
+FROM golang:1.23-bookworm AS builder
+
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /mock-kubeapi .
+
+FROM scratch
+COPY --from=builder /mock-kubeapi /mock-kubeapi
+EXPOSE 6443
+ENTRYPOINT ["/mock-kubeapi"]
