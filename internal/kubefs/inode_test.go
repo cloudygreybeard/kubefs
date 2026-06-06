@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package fs
+package kubefs
 
 import (
 	"os"
 	"testing"
-
-	"github.com/jacobsa/fuse/fuseops"
 )
 
 func TestInodeIsDir(t *testing.T) {
@@ -98,7 +96,7 @@ func TestInodeModeWithVerbs(t *testing.T) {
 func TestInodeTableRootExists(t *testing.T) {
 	it := NewInodeTable()
 
-	root := it.Get(fuseops.RootInodeID)
+	root := it.Get(RootInodeID)
 	if root == nil {
 		t.Fatal("root inode should exist")
 	}
@@ -110,19 +108,19 @@ func TestInodeTableRootExists(t *testing.T) {
 func TestInodeTableAddAndLookup(t *testing.T) {
 	it := NewInodeTable()
 
-	child := it.AddChild(fuseops.RootInodeID, &Inode{
+	child := it.AddChild(RootInodeID, &Inode{
 		Name: "default",
 		Type: NodeNamespace,
 	})
 
-	if child.ID == fuseops.RootInodeID {
+	if child.ID == RootInodeID {
 		t.Fatal("child should have a different ID than root")
 	}
-	if child.ParentID != fuseops.RootInodeID {
-		t.Errorf("child.ParentID = %d, want %d", child.ParentID, fuseops.RootInodeID)
+	if child.ParentID != RootInodeID {
+		t.Errorf("child.ParentID = %d, want %d", child.ParentID, RootInodeID)
 	}
 
-	found := it.LookupChild(fuseops.RootInodeID, "default")
+	found := it.LookupChild(RootInodeID, "default")
 	if found == nil {
 		t.Fatal("LookupChild should find the added child")
 	}
@@ -130,7 +128,7 @@ func TestInodeTableAddAndLookup(t *testing.T) {
 		t.Errorf("found.ID = %d, want %d", found.ID, child.ID)
 	}
 
-	missing := it.LookupChild(fuseops.RootInodeID, "nonexistent")
+	missing := it.LookupChild(RootInodeID, "nonexistent")
 	if missing != nil {
 		t.Fatal("LookupChild should return nil for missing child")
 	}
@@ -139,12 +137,12 @@ func TestInodeTableAddAndLookup(t *testing.T) {
 func TestInodeTableAddDuplicate(t *testing.T) {
 	it := NewInodeTable()
 
-	first := it.AddChild(fuseops.RootInodeID, &Inode{
+	first := it.AddChild(RootInodeID, &Inode{
 		Name: "ns",
 		Type: NodeNamespace,
 	})
 
-	second := it.AddChild(fuseops.RootInodeID, &Inode{
+	second := it.AddChild(RootInodeID, &Inode{
 		Name: "ns",
 		Type: NodeNamespace,
 	})
@@ -157,11 +155,11 @@ func TestInodeTableAddDuplicate(t *testing.T) {
 func TestInodeTableChildren(t *testing.T) {
 	it := NewInodeTable()
 
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "a", Type: NodeNamespace})
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "b", Type: NodeNamespace})
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "c", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "a", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "b", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "c", Type: NodeNamespace})
 
-	children := it.Children(fuseops.RootInodeID)
+	children := it.Children(RootInodeID)
 	if len(children) != 3 {
 		t.Fatalf("got %d children, want 3", len(children))
 	}
@@ -170,12 +168,12 @@ func TestInodeTableChildren(t *testing.T) {
 func TestInodeTableRemoveChildren(t *testing.T) {
 	it := NewInodeTable()
 
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "keep", Type: NodeNamespace})
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "remove", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "keep", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "remove", Type: NodeNamespace})
 
-	it.RemoveChildren(fuseops.RootInodeID, map[string]bool{"keep": true})
+	it.RemoveChildren(RootInodeID, map[string]bool{"keep": true})
 
-	children := it.Children(fuseops.RootInodeID)
+	children := it.Children(RootInodeID)
 	if len(children) != 1 {
 		t.Fatalf("got %d children, want 1", len(children))
 	}
@@ -183,7 +181,7 @@ func TestInodeTableRemoveChildren(t *testing.T) {
 		t.Errorf("remaining child name = %q, want %q", children[0].Name, "keep")
 	}
 
-	if it.LookupChild(fuseops.RootInodeID, "remove") != nil {
+	if it.LookupChild(RootInodeID, "remove") != nil {
 		t.Fatal("removed child should not be findable")
 	}
 }
@@ -191,20 +189,20 @@ func TestInodeTableRemoveChildren(t *testing.T) {
 func TestInodeTableRemoveChild(t *testing.T) {
 	it := NewInodeTable()
 
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "a", Type: NodeNamespace})
-	it.AddChild(fuseops.RootInodeID, &Inode{Name: "b", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "a", Type: NodeNamespace})
+	it.AddChild(RootInodeID, &Inode{Name: "b", Type: NodeNamespace})
 
-	if !it.RemoveChild(fuseops.RootInodeID, "a") {
+	if !it.RemoveChild(RootInodeID, "a") {
 		t.Fatal("RemoveChild should return true for existing child")
 	}
-	if it.LookupChild(fuseops.RootInodeID, "a") != nil {
+	if it.LookupChild(RootInodeID, "a") != nil {
 		t.Fatal("removed child should not be findable")
 	}
-	if it.LookupChild(fuseops.RootInodeID, "b") == nil {
+	if it.LookupChild(RootInodeID, "b") == nil {
 		t.Fatal("other child should still exist")
 	}
 
-	if it.RemoveChild(fuseops.RootInodeID, "nonexistent") {
+	if it.RemoveChild(RootInodeID, "nonexistent") {
 		t.Fatal("RemoveChild should return false for missing child")
 	}
 }

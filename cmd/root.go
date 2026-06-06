@@ -31,13 +31,13 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "kubefs",
 	Short: "Mount Kubernetes objects as a FUSE filesystem",
-	Long: `kubefs exposes Kubernetes cluster resources as a local filesystem
-using FUSE, allowing you to browse namespaces, resource types, and
-objects as directories, and read or edit their YAML/JSON representations
-as regular files.
+	Long: `kubefs exposes Kubernetes cluster resources as a local filesystem,
+allowing you to browse namespaces, resource types, and objects as
+directories, and read or edit their YAML/JSON representations as
+regular files.
 
-On macOS this uses FUSE-T (kext-less, NFS-backed).
-On Linux this uses kernel FUSE (/dev/fuse).`,
+On Linux this uses kernel FUSE (/dev/fuse).
+On macOS this uses an embedded NFS server (no FUSE required).`,
 }
 
 func init() {

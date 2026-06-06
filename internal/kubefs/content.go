@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package fs
+package kubefs
 
 import (
 	"context"
@@ -106,7 +106,6 @@ func (p *ContentProvider) ApplyContent(ctx context.Context, node *Inode, data []
 }
 
 // ActionFiles returns the virtual file names available for an object.
-// Pods get an additional "logs" file.
 func ActionFiles(resourceType string) []string {
 	files := []string{"yaml", "json", "describe"}
 	if resourceType == "pods" {
