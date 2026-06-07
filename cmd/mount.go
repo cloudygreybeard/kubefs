@@ -21,21 +21,22 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jacobsa/fuse"
-	"github.com/jacobsa/fuse/fuseutil"
 	"github.com/spf13/cobra"
 
-	kubefs "github.com/cloudygreybeard/kubefs/internal/fs"
+	"github.com/cloudygreybeard/kubefs/internal/fusemount"
 	"github.com/cloudygreybeard/kubefs/internal/k8s"
+	"github.com/cloudygreybeard/kubefs/internal/kubefs"
+	"github.com/cloudygreybeard/kubefs/internal/nfsmount"
 )
 
 const (
-	daemonEnv = "_KUBEFS_DAEMON"
-	// File descriptor number for the status pipe passed from parent to child.
+	daemonEnv   = "_KUBEFS_DAEMON"
 	statusFDEnv = "_KUBEFS_STATUS_FD"
 )
 
@@ -44,15 +45,23 @@ var (
 	debug       bool
 	foreground  bool
 	enableVerbs []string
+	transport   string
+	nfsAddr     string
 )
 
 var mountCmd = &cobra.Command{
 	Use:   "mount MOUNTPOINT",
 	Short: "Mount the Kubernetes filesystem",
-	Long: `Mount a FUSE filesystem that exposes Kubernetes objects as files.
+	Long: `Mount a filesystem that exposes Kubernetes objects as files.
 
-On macOS, this uses FUSE-T (kext-less, NFS-backed).
-On Linux, this uses kernel FUSE (/dev/fuse).
+On Linux, this uses kernel FUSE (/dev/fuse) by default.
+On macOS, this uses an embedded NFS server (no FUSE required).
+
+Use --transport to override the auto-detected transport:
+
+  kubefs mount /mnt/k8s                          # auto-detect
+  kubefs mount /mnt/k8s --transport=fuse         # force kernel FUSE
+  kubefs mount /mnt/k8s --transport=nfs          # force NFS
 
 By default the filesystem is read-only. Use --enable-verbs to opt in
 to mutating operations:
@@ -61,11 +70,6 @@ to mutating operations:
   kubefs mount --enable-verbs update /mnt/k8s                  # update existing
   kubefs mount --enable-verbs create,update /mnt/k8s           # create + update
   kubefs mount --enable-verbs create,update,delete /mnt/k8s    # full CRUD
-
-Valid verbs: create, update, delete. Read is always enabled.
-
-The process backgrounds itself by default. Use -f / --foreground to
-keep it in the foreground.
 
 The filesystem hierarchy is:
 
@@ -85,16 +89,44 @@ The filesystem hierarchy is:
 
 func init() {
 	mountCmd.Flags().DurationVar(&cacheTTL, "cache-ttl", 30*time.Second, "cache TTL for API responses")
-	mountCmd.Flags().BoolVar(&debug, "debug", false, "enable FUSE debug logging")
+	mountCmd.Flags().BoolVar(&debug, "debug", false, "enable debug logging")
 	mountCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "run in the foreground (default: daemonize)")
 	mountCmd.Flags().StringSliceVar(&enableVerbs, "enable-verbs", nil, "mutating verbs to enable (create,update,delete)")
+	mountCmd.Flags().StringVar(&transport, "transport", "auto", "mount transport: auto, fuse, or nfs")
+	mountCmd.Flags().StringVar(&nfsAddr, "nfs-addr", "127.0.0.1:0", "NFS server listen address (transport=nfs only)")
+
 	rootCmd.AddCommand(mountCmd)
 }
 
+func expandTilde(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
+}
+
+func resolveTransport() string {
+	if transport != "auto" {
+		return transport
+	}
+	if runtime.GOOS == "darwin" {
+		return "nfs"
+	}
+	if _, err := os.Stat("/dev/fuse"); err == nil {
+		return "fuse"
+	}
+	return "nfs"
+}
+
 func runMount(cmd *cobra.Command, args []string) error {
-	mountpoint := args[0]
+	mountpoint := expandTilde(args[0])
 
 	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+	kubeconfig = expandTilde(kubeconfig)
 	kubecontext, _ := cmd.Flags().GetString("context")
 
 	verbs, err := kubefs.ParseVerbs(enableVerbs)
@@ -114,25 +146,92 @@ func runMount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("connecting to cluster: %w", err)
 	}
 
-	// If not --foreground and not already the daemon child, re-exec in
-	// the background and exit the parent.
 	if !foreground && os.Getenv(daemonEnv) == "" {
 		return daemonize(logger)
 	}
 
-	return serveFUSE(ctx, client, mountpoint, logger, verbs)
+	resolved := resolveTransport()
+	logger.Printf("using %s transport", resolved)
+
+	switch resolved {
+	case "nfs":
+		return serveNFS(ctx, client, mountpoint, logger, verbs)
+	case "fuse":
+		return serveFUSE(ctx, client, mountpoint, logger, verbs)
+	default:
+		return fmt.Errorf("unknown transport %q (valid: auto, fuse, nfs)", resolved)
+	}
 }
 
-// daemonize re-executes the current process in the background. A pipe
-// connects the child back to the parent so the parent can report
-// whether the mount succeeded or relay the error to the user.
+func serveNFS(ctx context.Context, client *k8s.Client, mountpoint string, logger *log.Logger, verbs kubefs.AllowedVerbs) error {
+	kfs := kubefs.New(client, logger, verbs)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	srv, err := nfsmount.Mount(ctx, kfs, mountpoint, nfsAddr, logger)
+
+	reportMountStatus(err)
+
+	if err != nil {
+		return fmt.Errorf("mounting on %s: %w", mountpoint, err)
+	}
+
+	logger.Printf("mounted on %s (pid %d, %s, nfs)", mountpoint, os.Getpid(), verbs)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		logger.Printf("received %v, unmounting...", sig)
+		if err := srv.Unmount(); err != nil {
+			logger.Printf("unmount failed: %v; forcing exit", err)
+			os.Exit(1)
+		}
+		cancel()
+	}()
+
+	srv.Wait(ctx)
+	logger.Println("unmounted")
+	return nil
+}
+
+func serveFUSE(ctx context.Context, client *k8s.Client, mountpoint string, logger *log.Logger, verbs kubefs.AllowedVerbs) error {
+	kfs := kubefs.New(client, logger, verbs)
+
+	server, err := fusemount.Mount(kfs, mountpoint, verbs.ReadOnly(), debug, logger)
+
+	reportMountStatus(err)
+
+	if err != nil {
+		return fmt.Errorf("mounting on %s: %w", mountpoint, err)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		logger.Printf("received %v, unmounting...", sig)
+		if err := server.Unmount(); err != nil {
+			logger.Printf("unmount failed: %v; forcing exit", err)
+			os.Exit(1)
+		}
+		sig = <-sigCh
+		logger.Printf("received %v again, forcing exit", sig)
+		os.Exit(1)
+	}()
+
+	server.Wait()
+	logger.Println("unmounted")
+	return nil
+}
+
 func daemonize(logger *log.Logger) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("finding executable path: %w", err)
 	}
 
-	// Pipe for the child to send mount status back to the parent.
 	statusR, statusW, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("creating status pipe: %w", err)
@@ -142,38 +241,34 @@ func daemonize(logger *log.Logger) error {
 	child.Env = append(os.Environ(), daemonEnv+"=1")
 	child.ExtraFiles = []*os.File{statusW}
 	child.Env = append(child.Env, fmt.Sprintf("%s=%d", statusFDEnv, 3))
-
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	logFile, err := os.CreateTemp("", "kubefs-*.log")
 	if err != nil {
-		statusR.Close()
-		statusW.Close()
+		_ = statusR.Close()
+		_ = statusW.Close()
 		return fmt.Errorf("creating log file: %w", err)
 	}
 	child.Stderr = logFile
 	child.Stdout = logFile
 
 	if err := child.Start(); err != nil {
-		logFile.Close()
-		statusR.Close()
-		statusW.Close()
+		_ = logFile.Close()
+		_ = statusR.Close()
+		_ = statusW.Close()
 		return fmt.Errorf("starting background process: %w", err)
 	}
 
-	// Close the write end in the parent; only the child writes to it.
-	statusW.Close()
+	_ = statusW.Close()
 
-	// Wait for the child to report mount status.
 	buf := make([]byte, 1024)
 	n, _ := statusR.Read(buf)
-	statusR.Close()
+	_ = statusR.Close()
 
 	msg := string(buf[:n])
 	if msg != "ok" {
-		// Child failed to mount. Reap it so we don't leave a zombie.
 		_ = child.Wait()
-		logFile.Close()
+		_ = logFile.Close()
 		if msg == "" {
 			return fmt.Errorf("background process exited before mounting (log: %s)", logFile.Name())
 		}
@@ -183,63 +278,10 @@ func daemonize(logger *log.Logger) error {
 	logger.Printf("mounted on %s (pid %d)", os.Args[len(os.Args)-1], child.Process.Pid)
 
 	_ = child.Process.Release()
-	logFile.Close()
+	_ = logFile.Close()
 	return nil
 }
 
-func serveFUSE(ctx context.Context, client *k8s.Client, mountpoint string, logger *log.Logger, verbs kubefs.AllowedVerbs) error {
-	fs := kubefs.NewKubeFS(client, logger, verbs)
-	server := fuseutil.NewFileSystemServer(fs)
-
-	cfg := &fuse.MountConfig{
-		FSName:                    "kubefs",
-		VolumeName:                "Kubernetes",
-		DisableWritebackCaching:   true,
-		DisableDefaultPermissions: true,
-		ReadOnly:                  verbs.ReadOnly(),
-		ErrorLogger:               logger,
-	}
-
-	if debug {
-		cfg.DebugLogger = log.New(os.Stderr, "fuse: ", log.LstdFlags)
-	}
-
-	mfs, err := fuse.Mount(mountpoint, server, cfg)
-
-	// Report mount status to parent if running as daemon child.
-	reportMountStatus(err)
-
-	if err != nil {
-		return fmt.Errorf("mounting on %s: %w", mountpoint, err)
-	}
-
-	logger.Printf("mounted on %s (pid %d, %s)", mountpoint, os.Getpid(), verbs)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		logger.Printf("received %v, unmounting...", sig)
-		if err := unmountDir(mountpoint); err != nil {
-			logger.Printf("unmount failed: %v; forcing exit", err)
-			os.Exit(1)
-		}
-		sig = <-sigCh
-		logger.Printf("received %v again, forcing exit", sig)
-		os.Exit(1)
-	}()
-
-	if err := mfs.Join(ctx); err != nil {
-		return fmt.Errorf("join: %w", err)
-	}
-
-	logger.Println("unmounted")
-	return nil
-}
-
-// reportMountStatus writes the mount outcome to the status pipe so the
-// parent process can relay success or the error message to the user.
-// In foreground mode (no pipe) this is a no-op.
 func reportMountStatus(mountErr error) {
 	fdStr := os.Getenv(statusFDEnv)
 	if fdStr == "" {
@@ -251,20 +293,10 @@ func reportMountStatus(mountErr error) {
 	if w == nil {
 		return
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	if mountErr != nil {
-		fmt.Fprintf(w, "%v", mountErr)
+		_, _ = fmt.Fprintf(w, "%v", mountErr)
 	} else {
-		fmt.Fprint(w, "ok")
+		_, _ = fmt.Fprint(w, "ok")
 	}
-}
-
-// unmountDir unmounts the FUSE mount point. On macOS the umount(8)
-// command is used because FUSE-T's NFS layer rejects syscall.Unmount.
-// On Linux the library's fusermount-based unmount is used.
-func unmountDir(dir string) error {
-	if runtime.GOOS == "darwin" {
-		return exec.Command("umount", dir).Run()
-	}
-	return fuse.Unmount(dir)
 }

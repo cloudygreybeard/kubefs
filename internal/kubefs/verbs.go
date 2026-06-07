@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package fs
+package kubefs
 
 import (
 	"fmt"
@@ -51,9 +51,6 @@ func (v AllowedVerbs) String() string {
 }
 
 // ParseVerbs parses a slice of verb strings into AllowedVerbs.
-// Valid verbs are "create", "update", and "delete". The verb "read" is
-// accepted but has no effect (read is always enabled). Unknown verbs
-// produce an error.
 func ParseVerbs(input []string) (AllowedVerbs, error) {
 	var v AllowedVerbs
 	for _, raw := range input {

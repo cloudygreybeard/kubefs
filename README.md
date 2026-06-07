@@ -1,6 +1,6 @@
 # kubefs
 
-Mount Kubernetes cluster resources as a local FUSE filesystem.
+Mount Kubernetes cluster resources as a local filesystem.
 
 ![kubefs Demo](docs/kubefs-demo.svg)
 
@@ -9,14 +9,6 @@ their YAML/JSON representations as regular files. Saving a modified file
 applies the change to the cluster.
 
 ## Prerequisites
-
-### macOS
-
-Install [FUSE-T](https://www.fuse-t.org/):
-
-```bash
-brew install macos-fuse-t/homebrew-cask/fuse-t
-```
 
 ### Linux
 
@@ -29,6 +21,14 @@ sudo apt install fuse3
 # Fedora/RHEL
 sudo dnf install fuse3
 ```
+
+On Linux systems without FUSE, kubefs can also use its embedded NFS
+server as a fallback: `kubefs mount --transport=nfs /mnt/k8s`.
+
+### macOS
+
+No additional dependencies. kubefs embeds an NFS server and mounts via
+macOS's built-in NFS client.
 
 ## Installation
 
@@ -210,9 +210,30 @@ Resource types are discovered dynamically from the cluster API, including CRDs.
 
 ## How it works
 
-On macOS, kubefs uses FUSE-T (kext-less, NFS-backed). On Linux, it uses
-kernel FUSE (`/dev/fuse`). The underlying `jacobsa/fuse` library handles
-the platform dispatch; the application code is identical on both platforms.
+On Linux, kubefs uses kernel FUSE (`/dev/fuse`) via
+[hanwen/go-fuse](https://github.com/hanwen/go-fuse) — the standard,
+well-supported path for userspace filesystems.
+
+On macOS, kubefs takes a simpler approach: it embeds a lightweight
+NFSv3 server (via [willscott/go-nfs](https://github.com/willscott/go-nfs))
+and mounts it through macOS's built-in NFS client. This avoids any
+external dependencies and works out of the box on all recent macOS
+versions. As the macOS userspace filesystem ecosystem continues to
+mature — particularly Apple's FSKit framework — kubefs may adopt
+native FUSE support on macOS in a future release.
+
+The transport is selected automatically but can be overridden:
+
+```bash
+kubefs mount /mnt/k8s                      # auto-detect (FUSE on Linux, NFS on macOS)
+kubefs mount /mnt/k8s --transport=fuse     # force kernel FUSE
+kubefs mount /mnt/k8s --transport=nfs      # force embedded NFS server
+```
+
+When using the NFS transport, kubefs binds to `127.0.0.1` on a random
+high port. The listener is localhost-only and not reachable from the
+network. The NFS server exposes only what the configured kubeconfig's
+RBAC permits.
 
 ## Cross-compilation
 

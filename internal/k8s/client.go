@@ -274,7 +274,7 @@ func (c *Client) GetPodLogs(ctx context.Context, ns, name string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("getting logs for %s in %s: %w", name, ns, err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	data, err := io.ReadAll(stream)
 	if err != nil {
