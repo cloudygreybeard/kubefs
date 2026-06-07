@@ -47,11 +47,11 @@ func Mount(kfs *kubefs.FS, mountpoint string, readOnly, debug bool, logger *log.
 	}
 
 	if readOnly {
-		opts.MountOptions.Options = append(opts.MountOptions.Options, "ro")
+		opts.Options = append(opts.Options, "ro")
 	}
 
 	if debug {
-		opts.MountOptions.Debug = true
+		opts.Debug = true
 	}
 
 	server, err := fs.Mount(mountpoint, root, opts)

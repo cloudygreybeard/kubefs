@@ -245,30 +245,30 @@ func daemonize(logger *log.Logger) error {
 
 	logFile, err := os.CreateTemp("", "kubefs-*.log")
 	if err != nil {
-		statusR.Close()
-		statusW.Close()
+		_ = statusR.Close()
+		_ = statusW.Close()
 		return fmt.Errorf("creating log file: %w", err)
 	}
 	child.Stderr = logFile
 	child.Stdout = logFile
 
 	if err := child.Start(); err != nil {
-		logFile.Close()
-		statusR.Close()
-		statusW.Close()
+		_ = logFile.Close()
+		_ = statusR.Close()
+		_ = statusW.Close()
 		return fmt.Errorf("starting background process: %w", err)
 	}
 
-	statusW.Close()
+	_ = statusW.Close()
 
 	buf := make([]byte, 1024)
 	n, _ := statusR.Read(buf)
-	statusR.Close()
+	_ = statusR.Close()
 
 	msg := string(buf[:n])
 	if msg != "ok" {
 		_ = child.Wait()
-		logFile.Close()
+		_ = logFile.Close()
 		if msg == "" {
 			return fmt.Errorf("background process exited before mounting (log: %s)", logFile.Name())
 		}
@@ -278,7 +278,7 @@ func daemonize(logger *log.Logger) error {
 	logger.Printf("mounted on %s (pid %d)", os.Args[len(os.Args)-1], child.Process.Pid)
 
 	_ = child.Process.Release()
-	logFile.Close()
+	_ = logFile.Close()
 	return nil
 }
 
@@ -293,10 +293,10 @@ func reportMountStatus(mountErr error) {
 	if w == nil {
 		return
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	if mountErr != nil {
-		fmt.Fprintf(w, "%v", mountErr)
+		_, _ = fmt.Fprintf(w, "%v", mountErr)
 	} else {
-		fmt.Fprint(w, "ok")
+		_, _ = fmt.Fprint(w, "ok")
 	}
 }

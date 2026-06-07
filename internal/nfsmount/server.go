@@ -67,7 +67,7 @@ func Mount(ctx context.Context, kfs *kubefs.FS, mountpoint, addr string, logger 
 
 	if err := mountNFS(mountpoint, port); err != nil {
 		cancel()
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("mounting NFS: %w", err)
 	}
 
@@ -89,7 +89,7 @@ func (s *Server) Unmount() error {
 		mountErr = exec.Command("umount", s.mountpoint).Run()
 	}
 	s.cancel()
-	s.listener.Close()
+	_ = s.listener.Close()
 	return mountErr
 }
 
